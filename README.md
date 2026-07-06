@@ -1,5 +1,4 @@
-
-# FT8Commander
+# FT8Commander-NG
 
 > This is an experimental piece of code. Don't forget to run `git pull` often.
 > This code only works with the version of WSJT-X 2.5 and above.
