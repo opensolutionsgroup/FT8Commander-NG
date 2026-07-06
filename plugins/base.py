@@ -21,6 +21,7 @@ from urllib import request
 
 from config import Config
 from dbutils import connect_db
+from status import Status
 
 # Silence Python 3.12 deprecation warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -131,6 +132,7 @@ class CallSelector(ABC):
           self.log.warning("Ignore %s %s calling %s",
                            record['call'], record['continent'],
                            record['extra'])
+          Status().reject(record['call'], 'DX calling own continent')
         else:
           record['coef'] = self.coefficient(record['distance'], record['snr'])
           records.append(record)
@@ -138,17 +140,28 @@ class CallSelector(ABC):
 
   def select_record(self, records):
     records = self.sort(records)
+    winner = None
     for record in records:
       if not self.min_snr < record['snr'] < self.max_snr:
+        Status().reject(record['call'], f"SNR {record['snr']} out of range",
+                        category="SNR out of range")
         continue
       if record['call'] in self.blacklist:
         self.log.debug('%s is blacklisted', record['call'])
+        Status().reject(record['call'], 'blacklisted')
         continue
       if record['call'] not in self.lotw:
         self.log.debug('%s is not an lotw user', record['call'])
+        Status().reject(record['call'], 'not an LOTW user')
         continue
-      return record
-    return None
+      if winner is None:
+        winner = record
+      else:
+        # A valid candidate that lost out to a stronger one this cycle - without this,
+        # it would otherwise vanish with no select or reject event at all.
+        Status().reject(record['call'], f"outranked by {winner['call']} this cycle",
+                        category="outranked this cycle")
+    return winner
 
   @staticmethod
   def coefficient(dist, snr):

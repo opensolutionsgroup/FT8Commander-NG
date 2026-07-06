@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # BSD 3-Clause License
 #
@@ -11,6 +11,7 @@ import os
 import re
 import select
 import socket
+import sys
 import time
 from argparse import ArgumentParser
 from datetime import datetime
@@ -19,9 +20,15 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from queue import Queue
 
+import DXEntity
+
+import geo
 import wsjtx
 from config import Config
+from dashboard import Dashboard, DashboardLogHandler
 from dbutils import DBCommand, DBInsert, Purge, create_db, get_band
+from plugins.base import BlackList
+from status import Status
 
 SEQUENCE_TIME = {
   'FT8': {2, 17, 32, 47},
@@ -50,6 +57,8 @@ class Sequencer:
     self.follow_frequency = config.follow_frequency
     self.tx_power = getattr(config, 'tx_power')
     self.tx_retries = getattr(config, 'tx_retries', 5)
+    self.origin = geo.grid2latlon(config.my_grid)
+    self.dxe_lookup = DXEntity.DXCC().lookup
 
     bind_addr = socket.gethostbyname(config.wsjt_ip)
     self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -66,6 +75,7 @@ class Sequencer:
              '- %s - https://www.qrz.com/db/%s'),
              data['call'], data['extra'], data['country'], data['snr'], data['distance'],
              data['band'], data['selector'], data['call'])
+    Status().select(data['call'], data['selector'])
     pkt = data['packet']
     packet = wsjtx.WSReply()
     packet.call = data['call']
@@ -81,14 +91,16 @@ class Sequencer:
     LOG.debug('Transmitting %s', packet)
     try:
       self.sock.sendto(packet.raw(), ip_from)
+      Status().packet_out()
     except IOError as err:
       LOG.error("%s - %r", err, packet)
 
   def stop_transmit(self, ip_from):
     stop_pkt = wsjtx.WSHaltTx()
-    stop_pkt.tx = True
+    stop_pkt.mode = True
     try:
       self.sock.sendto(stop_pkt.raw(), ip_from)
+      Status().packet_out()
     except socket.error as err:
       LOG.error(err)
 
@@ -100,6 +112,7 @@ class Sequencer:
     if not self.logger_socket:
       self.logger_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     self.logger_socket.sendto(packet.raw(), (self.logger_ip, self.logger_port))
+    Status().relayed()
 
   def parser(self, message):
     for name, regexp in PARSERS.items():
@@ -121,6 +134,12 @@ class Sequencer:
     self.queue.put(
       (DBCommand.STATUS, {"call": packet.DXCall, "status": 2, "band": get_band(frequency)})
     )
+    country = None
+    try:
+      country = self.dxe_lookup(packet.DXCall).country
+    except KeyError:
+      pass
+    Status().worked(packet.DXCall, packet.DXGrid, country, get_band(frequency))
     LOG.info("** Logged call: %s, Grid: %s, Mode: %s",
              packet.DXCall, packet.DXGrid, wsjtx.Mode(packet.Mode).name)
 
@@ -139,6 +158,7 @@ class Sequencer:
     current = None
     current_retries = 0
     last_tx_message = ""
+    was_transmitting = False
     sequence = []
     LOG.info('ft8ctl running...')
 
@@ -147,6 +167,7 @@ class Sequencer:
       for fdin in fds:
         rawdata, ip_from = fdin.recvfrom(1024)
         packet = wsjtx.ft8_decode(rawdata)
+        Status().heartbeat()
         match packet:
           case wsjtx.WSHeartbeat() | wsjtx.WSADIF():
             pass
@@ -155,43 +176,66 @@ class Sequencer:
             current = None
           case wsjtx.WSDecode():
             name, match = self.decode(packet)
+            Status().raw_decode(packet.SNR, packet.DeltaFrequency, packet.Mode, packet.Message,
+                                cycle=packet.Time, is_cq=(name == 'CQ'))
             if name == 'REPLY' and match['call'] == current and match['to'] != self.mycall:
               LOG.info("Stop Transmit: %s Replying to %s ", match['call'], match['to'])
               self.stop_transmit(ip_from)
               self.queue.put((DBCommand.DELETE,
                               {"call": match['call'], "band": get_band(frequency)}))
+              Status().reject(match['call'], f"replied to {match['to']}",
+                              category="replied to another station")
             elif name == 'CQ':
               match['frequency'] = frequency
               match['band'] = get_band(frequency)
               match['packet'] = packet.as_dict()
+              distance, country = None, None
+              try:
+                distance = geo.distance(self.origin, geo.grid2latlon(match['grid']))
+                country = self.dxe_lookup(match['call']).country
+              except (KeyError, RuntimeError):
+                pass
+              Status().decode(match['call'], match.get('extra'), packet.SNR, match['band'],
+                              match.get('grid'), distance, country)
               self.queue.put((DBCommand.INSERT, match))
             continue
           case wsjtx.WSStatus():
-            # WSJT-X will sometimes send multiple status packets where Transmitting is
-            # True for the same transmission.
-            # Checking Decoding here prevents increases in retries for the same transmission.
             tx = not packet.Decoding and packet.Transmitting
-            if tx and last_tx_message == packet.TxMessage:
+            if packet.Transmitting and packet.DXCall:
+              self.queue.put(
+                (DBCommand.STATUS,
+                 {"call": packet.DXCall, "status": 1, "band": get_band(packet.Frequency)})
+              )
+
+            # WSJT-X sends multiple status packets during a single transmission.
+            # Only count a retry on the False -> True edge, i.e. once per actual
+            # transmission, instead of once per status packet.
+            if tx and not was_transmitting:
+              if last_tx_message != packet.TxMessage:
+                current_retries = 0
+                last_tx_message = packet.TxMessage
+              current_retries += 1
               if current_retries >= self.tx_retries:
                 LOG.info("Retries exceeded, stopping transmit")
                 self.stop_transmit(ip_from)
+                if packet.DXCall:
+                  # Mark abandoned (status 3) rather than deleting: WSJT-X will keep
+                  # decoding this station's CQ, and a fresh INSERT would otherwise
+                  # make it immediately selectable again. It cools down and becomes
+                  # eligible again after retry_time, same as a stale status 0 record.
+                  self.queue.put((DBCommand.STATUS,
+                                  {"call": packet.DXCall, "status": 3,
+                                   "band": get_band(packet.Frequency)}))
+                  Status().reject(packet.DXCall, 'retries exceeded')
                 current_retries = 0
-                continue
-            elif tx and last_tx_message != packet.TxMessage:
-              current_retries = 0
-
-            if tx:
-              current_retries += 1
-              last_tx_message = packet.TxMessage
+            was_transmitting = tx
 
             sequence = SEQUENCE_TIME[packet.TXMode]
             frequency = packet.Frequency
             tx_status = any([packet.Transmitting, packet.TXEnabled])
-            if (packet.Transmitting and packet.DXCall):
-              self.queue.put(
-                (DBCommand.STATUS,
-                 {"call": packet.DXCall, "status": 1, "band": get_band(frequency)})
-              )
+            Status().state(frequency=frequency, band=get_band(frequency), mode=packet.TXMode,
+                          tx_enabled=packet.TXEnabled, transmitting=packet.Transmitting,
+                          current_retry=current_retries, max_retries=self.tx_retries)
             if packet.DXCall:
               LOG.debug("%s => TX: %s, TXEnabled: %s - TXWatchdog: %s", packet.DXCall,
                         packet.Transmitting, packet.TXEnabled, packet.TXWatchdog)
@@ -256,14 +300,15 @@ def get_log_level():
   return loglevel
 
 
-def main():
+def setup(config_path, console_handler):
+  """Load config, set up logging/DB threads/plugins. Shared by the terminal and
+  Qt entry points so neither has to duplicate startup order/behavior.
+  `console_handler` is provided by the caller since the terminal dashboard and the
+  Qt GUI each want log records routed differently."""
   # pylint: disable=global-statement
   global LOG
-  parser = ArgumentParser(description="ft8ctl wsjt-x automation")
-  parser.add_argument("-c", "--config", help="Name of the configuration file")
-  opts = parser.parse_args()
 
-  config = Config(opts.config)
+  config = Config(config_path)
   config = config['ft8ctrl']
 
   formatter = logging.Formatter(
@@ -273,8 +318,6 @@ def main():
   LOG = logging.getLogger()
   LOG.setLevel(logging.DEBUG)
 
-  console_handler = logging.StreamHandler()
-  console_handler.setLevel(get_log_level())
   console_handler.setFormatter(formatter)
   LOG.addHandler(console_handler)
 
@@ -301,6 +344,41 @@ def main():
   db_purge.start()
 
   call_select = LoadPlugins(config.call_selector)
+
+  Status().state(
+    grid=config.my_grid,
+    selectors=[s.__class__.__name__ for s in call_select.call_select],
+    blacklist_size=len(BlackList().blacklist),
+    wsjt_endpoint=f"{config.wsjt_ip}:{config.wsjt_port}",
+    relay_endpoint=(f"{config.logger_ip}:{config.logger_port}"
+                    if getattr(config, 'logger_ip', None) else None),
+  )
+
+  return config, queue, call_select
+
+
+def main():
+  parser = ArgumentParser(description="ft8ctl wsjt-x automation")
+  parser.add_argument("-c", "--config", help="Name of the configuration file")
+  parser.add_argument("--no-dashboard", action="store_true",
+                      help="Disable the live dashboard and use plain console logging")
+  opts = parser.parse_args()
+
+  use_dashboard = sys.stdout.isatty() and not opts.no_dashboard
+  if use_dashboard:
+    console_handler = DashboardLogHandler()
+    console_handler.setLevel(logging.WARNING)
+  else:
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(get_log_level())
+
+  config, queue, call_select = setup(opts.config, console_handler)
+
+  dashboard = None
+  if use_dashboard:
+    dashboard = Dashboard(config.my_call)
+    dashboard.start()
+
   try:
     main_loop = Sequencer(config, queue, call_select)
     main_loop.run()
@@ -308,6 +386,9 @@ def main():
     LOG.error('%s - %s', config.wsjt_ip, err.strerror)
   except KeyboardInterrupt:
     LOG.info('^C pressed exiting')
+  finally:
+    if dashboard:
+      dashboard.stop()
 
 
 if __name__ == '__main__':

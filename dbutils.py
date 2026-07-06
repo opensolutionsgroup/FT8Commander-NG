@@ -16,6 +16,7 @@ from threading import Thread
 import DXEntity
 
 import geo
+from status import Status
 
 
 # DBInsert commands.
@@ -25,6 +26,8 @@ class DBCommand(Enum):
   DELETE = 3
 
 
+# Status: 0 = new/not yet worked, 1 = currently being called, 2 = logged/worked,
+#         3 = abandoned (retries exceeded, cools down like status 0/1 then re-eligible)
 SQL_TABLE = """
 CREATE TABLE IF NOT EXISTS cqcalls
 (
@@ -201,6 +204,7 @@ class DBInsert(Thread):
         data.cqzone, data.ituzone, data.frequency, data.band, data.packet))
       if not curs.rowcount:
         logger.debug("DB Write: already worked %s on %d band", data.call, data.band)
+        Status().reject(data.call, 'already in database')
       else:
         logger.debug("DB Write: %s, %s, %s, %s", data.call, data.continent, data.grid,
                      data.country)
@@ -221,7 +225,7 @@ class DBInsert(Thread):
 
 
 class Purge(Thread):
-  REQ = "DELETE FROM cqcalls WHERE status < 2 AND time < datetime('now','{} minute');"
+  REQ = "DELETE FROM cqcalls WHERE status <> 2 AND time < datetime('now','{} minute');"
 
   def __init__(self, db_name, purge_time):
     super().__init__()
