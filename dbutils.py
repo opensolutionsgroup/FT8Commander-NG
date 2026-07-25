@@ -16,7 +16,6 @@ from threading import Thread
 import DXEntity
 
 import geo
-from status import Status
 
 
 # DBInsert commands.
@@ -136,12 +135,35 @@ def get_call(db_name, call):
   return dict(record) if record else {}
 
 
+def has_worked(db_name, call, band=None):
+  """Has this callsign ever been logged (status 2) in this DB's history? Pass `band`
+  to scope the check to that specific band (matching the (call, band) uniqueness the
+  rest of the schema uses), or omit it to check across any band."""
+  if band is not None:
+    req = "SELECT 1 FROM cqcalls WHERE call = ? AND band = ? AND status = 2 LIMIT 1"
+    params = (call, band)
+  else:
+    req = "SELECT 1 FROM cqcalls WHERE call = ? AND status = 2 LIMIT 1"
+    params = (call,)
+  with connect_db(db_name) as conn:
+    curs = conn.cursor()
+    curs.execute(req, params)
+    return curs.fetchone() is not None
+
+
 class DBInsert(Thread):
 
+  # `time` always refreshes on re-decode, even for an already-worked (status 2)
+  # row - otherwise its timestamp stays frozen at whenever it was first inserted,
+  # so it can never pass the selector's freshness window again, and the
+  # "already worked" reason in Activity becomes unreachable for it. snr/packet
+  # stay protected for status 2 rows, preserving the original QSO's data.
   INSERT = """
   INSERT INTO cqcalls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  ON CONFLICT(call, band) DO UPDATE SET snr = excluded.snr, packet = excluded.packet
-  WHERE status <> 2
+  ON CONFLICT(call, band) DO UPDATE SET
+    time = excluded.time,
+    snr = CASE WHEN status <> 2 THEN excluded.snr ELSE snr END,
+    packet = CASE WHEN status <> 2 THEN excluded.packet ELSE packet END
   """
   UPDATE = "UPDATE cqcalls SET status=? WHERE status <> 2 and call = ? and band = ?"
   DELETE = "DELETE from cqcalls WHERE status= 1 AND call = ? and band = ?"
@@ -202,12 +224,11 @@ class DBInsert(Thread):
         data.call, data.extra, data.packet['Time'], 0, data.packet['SNR'], data.grid,
         data.lat, data.lon, data.distance, data.azimuth, data.country, data.continent,
         data.cqzone, data.ituzone, data.frequency, data.band, data.packet))
-      if not curs.rowcount:
-        logger.debug("DB Write: already worked %s on %d band", data.call, data.band)
-        Status().reject(data.call, 'already in database')
-      else:
-        logger.debug("DB Write: %s, %s, %s, %s", data.call, data.continent, data.grid,
-                     data.country)
+      # The ON CONFLICT branch now always updates (at minimum `time`), so rowcount
+      # can no longer distinguish "brand new row" from "refreshed existing row" -
+      # not worth a second query just to keep that distinction in a debug log.
+      logger.debug("DB Write: %s, %s, %s, %s", data.call, data.continent, data.grid,
+                   data.country)
 
   @staticmethod
   def status(conn, data):
@@ -225,7 +246,9 @@ class DBInsert(Thread):
 
 
 class Purge(Thread):
-  REQ = "DELETE FROM cqcalls WHERE status <> 2 AND time < datetime('now','{} minute');"
+  # status 2 (logged/worked) is intentionally excluded and never purged, so a station
+  # already worked on a given band can't quietly become re-workable again.
+  REQ = "DELETE FROM cqcalls WHERE status IN (0, 1, 3) AND time < datetime('now','{} minute');"
 
   def __init__(self, db_name, purge_time):
     super().__init__()

@@ -7,6 +7,7 @@
 #
 
 import logging
+import re
 from pathlib import Path
 
 import yaml
@@ -71,6 +72,45 @@ class Config:
 
   def to_yaml(self):
     return yaml.dump(self.config_data, explicit_start=True)
+
+  def save_value(self, section, key, value):
+    """Update a single scalar value in a top-level section and persist it back to
+    the config file in place. Patches just the one line (or inserts it right after
+    the section header if it wasn't already present) instead of re-dumping the
+    whole document with yaml.dump(), which would silently strip every comment in
+    ft8ctrl.yaml - this file is meant to be hand-edited/documented, so that's not
+    an acceptable tradeoff just to persist one GUI-editable field."""
+    self.config_data.setdefault(section, {})[key] = value
+
+    section_re = re.compile(rf'^{re.escape(section)}:\s*$')
+    key_re = re.compile(rf'^(\s+){re.escape(key)}:.*$')
+    lines = self.config_filename.read_text(encoding='utf-8').splitlines(keepends=True)
+    in_section = False
+    section_start = None
+    found = False
+    for i, line in enumerate(lines):
+      if section_re.match(line):
+        in_section = True
+        section_start = i
+        continue
+      if not in_section:
+        continue
+      if line.strip() and not line[0].isspace():
+        break
+      match = key_re.match(line)
+      if match:
+        lines[i] = f'{match.group(1)}{key}: {value}\n'
+        found = True
+        break
+
+    if section_start is None:
+      self.log.error('Section "%s" not found in %s', section, self.config_filename)
+      return
+    if not found:
+      lines.insert(section_start + 1, f'  {key}: {value}\n')
+
+    self.config_filename.write_text(''.join(lines), encoding='utf-8')
+    self.log.info('Saved %s.%s = %s to %s', section, key, value, self.config_filename)
 
   def get(self, key, default=None):
     try:

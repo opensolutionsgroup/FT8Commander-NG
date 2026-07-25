@@ -90,8 +90,9 @@ class BlackList:
 class CallSelector(ABC):
   # pylint: disable=too-many-instance-attributes
 
-  REQ = ("SELECT * FROM cqcalls WHERE "
-         "status = 0 AND band = ? AND time > ?")
+  # status is filtered in Python, not SQL, so "already worked" gets a proper
+  # reject() reason like every other filter instead of vanishing silently.
+  REQ = "SELECT * FROM cqcalls WHERE band = ? AND time > ?"
 
   def __init__(self):
     config = Config()
@@ -106,7 +107,11 @@ class CallSelector(ABC):
     self.db_name = Path(config['ft8ctrl.db_name']).expanduser()
     self.min_snr = getattr(self.config, "min_snr", MIN_SNR)
     self.max_snr = getattr(self.config, "max_snr", MAX_SNR)
-    self.delta = getattr(self.config, "delta", 29)
+    # Default widened from 29s: selection only runs every ~15s (FT8) at fixed
+    # timing marks, and the DB write is async, so 29s left barely one shot at
+    # evaluating a freshly decoded CQ before it silently aged out of the query
+    # entirely - before any filter ever got a chance to log a reason for it.
+    self.delta = getattr(self.config, "delta", 60)
     self.continent = getattr(self.config, 'my_continent', 'NA')
     self.log.debug('My continent %s', self.continent)
 
@@ -120,6 +125,14 @@ class CallSelector(ABC):
   def get(self, band):
     return self._get(band)
 
+  @staticmethod
+  def _decode_fields(record):
+    """SNR/frequency-offset/mode/message from the original decode, for the Activity
+    feed - matches what the Decode Window shows, so a reason can be cross-referenced
+    against the raw decode it applied to."""
+    pkt = record.get('packet') or {}
+    return record.get('snr'), pkt.get('DeltaFrequency'), pkt.get('Mode'), pkt.get('Message')
+
   @SingleObjectCache()
   def _get(self, band):
     records = []
@@ -128,11 +141,23 @@ class CallSelector(ABC):
       curs = conn.cursor()
       curs.execute(self.REQ, (band, start))
       for record in (dict(r) for r in curs):
+        if record['status'] == 2:
+          snr, delta_freq, mode, message = self._decode_fields(record)
+          Status().reject(record['call'], 'already worked', category='already worked',
+                          snr=snr, delta_freq=delta_freq, mode=mode, message=message)
+          continue
+        if record['status'] != 0:
+          # status 1 (currently being called) or 3 (recently abandoned, cooling
+          # down) - not a candidate, but not worth a reason either since neither
+          # is a filtering *decision*, just a temporary state.
+          continue
         if record['extra'] == 'DX' and record['continent'] == self.continent:
           self.log.warning("Ignore %s %s calling %s",
                            record['call'], record['continent'],
                            record['extra'])
-          Status().reject(record['call'], 'DX calling own continent')
+          snr, delta_freq, mode, message = self._decode_fields(record)
+          Status().reject(record['call'], 'DX calling own continent',
+                          snr=snr, delta_freq=delta_freq, mode=mode, message=message)
         else:
           record['coef'] = self.coefficient(record['distance'], record['snr'])
           records.append(record)
@@ -142,17 +167,23 @@ class CallSelector(ABC):
     records = self.sort(records)
     winner = None
     for record in records:
-      if not self.min_snr < record['snr'] < self.max_snr:
+      snr, delta_freq, mode, message = self._decode_fields(record)
+      # Both bounds inclusive: a station reported exactly at min_snr or max_snr
+      # is accepted.
+      if not self.min_snr <= record['snr'] <= self.max_snr:
         Status().reject(record['call'], f"SNR {record['snr']} out of range",
-                        category="SNR out of range")
+                        category="SNR out of range", snr=snr, delta_freq=delta_freq,
+                        mode=mode, message=message)
         continue
       if record['call'] in self.blacklist:
         self.log.debug('%s is blacklisted', record['call'])
-        Status().reject(record['call'], 'blacklisted')
+        Status().reject(record['call'], 'blacklisted', snr=snr, delta_freq=delta_freq,
+                        mode=mode, message=message)
         continue
       if record['call'] not in self.lotw:
         self.log.debug('%s is not an lotw user', record['call'])
-        Status().reject(record['call'], 'not an LOTW user')
+        Status().reject(record['call'], 'not an LOTW user', snr=snr, delta_freq=delta_freq,
+                        mode=mode, message=message)
         continue
       if winner is None:
         winner = record
@@ -160,7 +191,8 @@ class CallSelector(ABC):
         # A valid candidate that lost out to a stronger one this cycle - without this,
         # it would otherwise vanish with no select or reject event at all.
         Status().reject(record['call'], f"outranked by {winner['call']} this cycle",
-                        category="outranked this cycle")
+                        category="outranked this cycle", snr=snr, delta_freq=delta_freq,
+                        mode=mode, message=message)
     return winner
 
   @staticmethod

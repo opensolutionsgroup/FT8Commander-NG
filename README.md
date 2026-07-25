@@ -5,7 +5,7 @@
 
 ### WSJT-X FT8 Automation
 
-FT8Commander is an experimental project for ham radio operators who
+FT8Commander-NG is an experimental project for ham radio operators who
 want automatic control of their FT8 contacts. This program controls
 WSJT-X to optimize contacts' chances during a contest or DX (make as
 many QSO as possible). After a receive sequence, the program uses
@@ -25,5 +25,22 @@ QSO.
   7. Watch WSJT-X making contacts.
 
 > This program runs on MacOS and Linux.
+
+## Interfaces
+
+Besides the original terminal output, two live interfaces are available:
+
+  - `./ft8ctrl.py` — starts with a live terminal dashboard (`rich`). Use
+    `--no-dashboard` for plain log output.
+  - `./ft8ctrl_gui.py` — a small Qt companion window for WSJT-X. Requires PyQt6
+    (`apt install python3-pyqt6` on Debian/Ubuntu; it is intentionally not in
+    `requirements.txt` so the terminal version stays dependency-light).
+
+## Credits
+
+Original project, including `DXEntity.py`, by Fred Cirera (W6BSD):
+https://github.com/0x9900/FT8Commander
+
+FT8Commander-NG maintained by Paul Miskovsky (VE3EXR).
 
 [^1]: Signal To Noise Ratio
