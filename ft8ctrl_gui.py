@@ -69,12 +69,20 @@ ATTEMPT_COLOR = {"worked": GREEN, "broken": RED, "in progress": QColor("#1976d2"
 
 # Monitor greys out while the radio is keyed - nothing can be received then, so
 # the :checked green is scoped to the enabled state and a disabled look wins.
+#
+# Every lit button states its text colour explicitly. Without it the text
+# follows the palette, and in dark mode that is near-white on these pale
+# backgrounds - about 1.3:1 contrast, effectively unreadable.
 MONITOR_STYLE = (
-  "QPushButton:checked:enabled { background-color: #90ee90; font-weight: bold; }"
+  "QPushButton:checked:enabled { background-color: #90ee90; color: black; font-weight: bold; }"
   "QPushButton:disabled { background-color: #dcdcdc; color: #9a9a9a; }"
 )
-# Enable Tx distinguishes "automation armed" from "actually on the air".
-TX_ARMED_STYLE = "QPushButton:checked { background-color: #ff6b6b; font-weight: bold; }"
+DECODE_STYLE = "QPushButton:checked { background-color: #ffd54f; color: black; font-weight: bold; }"
+# Enable Tx distinguishes "automation armed" from "actually on the air". The
+# on-air red is dark enough that white is the readable choice there; the pale
+# armed colour takes black like the rest.
+TX_ARMED_STYLE = ("QPushButton:checked { background-color: #ff6b6b; color: black; "
+                  "font-weight: bold; }")
 TX_ONAIR_STYLE = ("QPushButton:checked { background-color: #c62828; color: white; "
                   "font-weight: bold; }")
 
@@ -301,8 +309,7 @@ class MainWindow(QMainWindow):
     self.decode_button = QPushButton("Decode")
     self.decode_button.setCheckable(True)
     self.decode_button.setEnabled(False)
-    self.decode_button.setStyleSheet(
-      "QPushButton:checked { background-color: #ffd54f; font-weight: bold; }")
+    self.decode_button.setStyleSheet(DECODE_STYLE)
     row.addWidget(self.decode_button)
 
     self.enable_tx_button = QPushButton("Enable Tx")
