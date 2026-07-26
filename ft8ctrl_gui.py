@@ -67,6 +67,17 @@ TAB_BASE_LABELS = {TAB_ATTEMPTS: "Attempts", TAB_WORKED: "Worked"}
 
 ATTEMPT_COLOR = {"worked": GREEN, "broken": RED, "in progress": QColor("#1976d2")}
 
+# Monitor greys out while the radio is keyed - nothing can be received then, so
+# the :checked green is scoped to the enabled state and a disabled look wins.
+MONITOR_STYLE = (
+  "QPushButton:checked:enabled { background-color: #90ee90; font-weight: bold; }"
+  "QPushButton:disabled { background-color: #dcdcdc; color: #9a9a9a; }"
+)
+# Enable Tx distinguishes "automation armed" from "actually on the air".
+TX_ARMED_STYLE = "QPushButton:checked { background-color: #ff6b6b; font-weight: bold; }"
+TX_ONAIR_STYLE = ("QPushButton:checked { background-color: #c62828; color: white; "
+                  "font-weight: bold; }")
+
 
 def build_icon():
   """A small radio-waves/antenna mark, drawn at runtime so the app has a real
@@ -110,6 +121,9 @@ class MainWindow(QMainWindow):
     # constructed (e.g. in tests) without a database behind it.
     self.db_name = Path(db_name).expanduser() if db_name else None
     self._history_session_count = None
+    # Tracks the last applied Enable Tx styling so it is only swapped on a
+    # transition rather than on every refresh tick.
+    self._tx_on_air = None
     # Min SNR is editable from the GUI, but only for the first active selector -
     # `call_selector` in the config can list several, and editing "the" min SNR
     # only makes unambiguous sense for one of them at a time.
@@ -175,56 +189,7 @@ class MainWindow(QMainWindow):
 
     self.tabs = QTabWidget()
     layout.addWidget(self.tabs, stretch=1)
-
-    mono_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
-
-    self.decode_window_table = self._make_table(
-      ["Time", "SNR", "Freq(Hz)", "Mode", "Message"], mono_font)
-    # Bottom pane, similar to WSJT-X's own Rx Frequency window: everything
-    # mentioning my call plus every decode (including the original CQ) from a
-    # station whose CQ I've answered this session - not just the current QSO.
-    self.mycall_table = self._make_table(
-      ["Time", "SNR", "Freq(Hz)", "Mode", "Message"], mono_font)
-    decode_splitter = QSplitter(Qt.Orientation.Vertical)
-    decode_splitter.addWidget(self.decode_window_table)
-    decode_splitter.addWidget(self.mycall_table)
-    decode_splitter.setStretchFactor(0, 3)
-    decode_splitter.setStretchFactor(1, 1)
-    self.tabs.addTab(self._tab_page(decode_splitter), "Decode")
-
-    # Activity (top) and Attempts (bottom) share one tab, split like Decode above -
-    # Activity is the cycle-scoped "what was considered and why", Attempts is the
-    # persistent "what was actually called and how it turned out".
-    self.activity_table = self._make_table(
-      ["Time", "SNR", "Freq(Hz)", "Mode", "Message", "Result"])
-    self.activity_stats_label = self._stats_label()
-
-    self.attempts_table = self._make_table(
-      ["Time", "Call", "Grid", "Dist(km)", "Country", "SNR", "Band", "Selector", "Result"],
-      mono_font)
-    self.attempts_stats_label = self._stats_label()
-
-    attempts_splitter = QSplitter(Qt.Orientation.Vertical)
-    attempts_splitter.addWidget(self._tab_page(self.activity_table, self.activity_stats_label))
-    attempts_splitter.addWidget(self._tab_page(self.attempts_table, self.attempts_stats_label))
-    attempts_splitter.setStretchFactor(0, 1)
-    attempts_splitter.setStretchFactor(1, 2)
-    self.tabs.addTab(self._tab_page(attempts_splitter), "Attempts")
-
-    # This session's QSOs on top, every QSO ever logged underneath - same split
-    # treatment as the Decode and Attempts tabs.
-    worked_columns = ["Time", "Call", "Grid", "Dist(km)", "Country", "Band",
-                      "Freq(MHz)", "RSTs", "RSTr"]
-    self.worked_table = self._make_table(worked_columns)
-    self.worked_stats_label = self._stats_label()
-    self.history_table = self._make_table(["Date/Time"] + worked_columns[1:])
-    self.history_stats_label = self._stats_label()
-    worked_splitter = QSplitter(Qt.Orientation.Vertical)
-    worked_splitter.addWidget(self._tab_page(self.worked_table, self.worked_stats_label))
-    worked_splitter.addWidget(self._tab_page(self.history_table, self.history_stats_label))
-    worked_splitter.setStretchFactor(0, 1)
-    worked_splitter.setStretchFactor(1, 2)
-    self.tabs.addTab(self._tab_page(worked_splitter), "Worked")
+    self._build_tabs()
 
     # Tracks the last-seen count per tab, so a running total that increases while
     # you're looking at a *different* tab can flag that tab as having new activity.
@@ -244,6 +209,55 @@ class MainWindow(QMainWindow):
     self.refresh()
 
   # -- One-time construction ------------------------------------------------
+
+  def _build_tabs(self):
+    """Populate the tab widget. Each tab pairs a live view with the persistent
+    record behind it, split vertically."""
+    mono_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+
+    self.decode_window_table = self._make_table(
+      ["Time", "SNR", "Freq(Hz)", "Mode", "Message"], mono_font)
+    # Bottom pane, similar to WSJT-X's own Rx Frequency window: everything
+    # mentioning my call plus every decode (including the original CQ) from a
+    # station whose CQ I've answered this session - not just the current QSO.
+    self.mycall_table = self._make_table(
+      ["Time", "SNR", "Freq(Hz)", "Mode", "Message"], mono_font)
+    self.tabs.addTab(
+      self._tab_page(self._split(self.decode_window_table, self.mycall_table, 3, 1)),
+      "Decode")
+
+    # Activity (top) is the cycle-scoped "what was considered and why";
+    # Attempts (bottom) is the persistent "what was called and how it went".
+    self.activity_table = self._make_table(
+      ["Time", "SNR", "Freq(Hz)", "Mode", "Message", "Result"])
+    self.activity_stats_label = self._stats_label()
+    self.attempts_table = self._make_table(
+      ["Time", "Call", "Grid", "Dist(km)", "Country", "SNR", "Band", "Selector", "Result"],
+      mono_font)
+    self.attempts_stats_label = self._stats_label()
+    self.tabs.addTab(self._tab_page(self._split(
+      self._tab_page(self.activity_table, self.activity_stats_label),
+      self._tab_page(self.attempts_table, self.attempts_stats_label), 1, 2)), "Attempts")
+
+    # This session's QSOs on top, every QSO ever logged underneath.
+    worked_columns = ["Time", "Call", "Grid", "Dist(km)", "Country", "Band",
+                      "Freq(MHz)", "RSTs", "RSTr"]
+    self.worked_table = self._make_table(worked_columns)
+    self.worked_stats_label = self._stats_label()
+    self.history_table = self._make_table(["Date/Time"] + worked_columns[1:])
+    self.history_stats_label = self._stats_label()
+    self.tabs.addTab(self._tab_page(self._split(
+      self._tab_page(self.worked_table, self.worked_stats_label),
+      self._tab_page(self.history_table, self.history_stats_label), 1, 2)), "Worked")
+
+  @staticmethod
+  def _split(top, bottom, top_stretch, bottom_stretch):
+    splitter = QSplitter(Qt.Orientation.Vertical)
+    splitter.addWidget(top)
+    splitter.addWidget(bottom)
+    splitter.setStretchFactor(0, top_stretch)
+    splitter.setStretchFactor(1, bottom_stretch)
+    return splitter
 
   def _build_menu(self):
     file_menu = self.menuBar().addMenu("&File")
@@ -280,8 +294,7 @@ class MainWindow(QMainWindow):
     self.monitor_button.setToolTip(
       "When on, poll WSJT-X for decodes and drive contacts. Turn off to stop all "
       "communication with WSJT-X (e.g. when WSJT-X is closed).")
-    self.monitor_button.setStyleSheet(
-      "QPushButton:checked { background-color: #90ee90; font-weight: bold; }")
+    self.monitor_button.setStyleSheet(MONITOR_STYLE)
     self.monitor_button.clicked.connect(self._toggle_monitoring)
     row.addWidget(self.monitor_button)
 
@@ -294,8 +307,7 @@ class MainWindow(QMainWindow):
 
     self.enable_tx_button = QPushButton("Enable Tx")
     self.enable_tx_button.setCheckable(True)
-    self.enable_tx_button.setStyleSheet(
-      "QPushButton:checked { background-color: #ff6b6b; font-weight: bold; }")
+    self.enable_tx_button.setStyleSheet(TX_ARMED_STYLE)
     self.enable_tx_button.clicked.connect(self._toggle_paused)
     row.addWidget(self.enable_tx_button)
 
@@ -631,9 +643,24 @@ class MainWindow(QMainWindow):
       self.bearing_label.setVisible(False)
 
   def _refresh_controls(self, data):
+    # Only treat Tx as live while WSJT-X is still talking to us. If it dies
+    # mid-transmission its last reported state stays Transmitting=True forever,
+    # and keying off that alone would leave Monitor permanently disabled - the
+    # one button you need in exactly that situation.
+    alive = bool(data['wsjtx_seen']) and \
+        (datetime.utcnow() - data['wsjtx_seen']).total_seconds() < 10
+    on_air = data['transmitting'] and alive
+
     self.monitor_button.setChecked(data['monitoring'])
+    # Nothing can be received while the radio is keyed, so Monitor greys out for
+    # the duration of the transmission, as WSJT-X's own does.
+    self.monitor_button.setEnabled(not on_air)
     self.decode_button.setChecked(data['decoding'])
     self.enable_tx_button.setChecked(not data['paused'])
+    # Restyle only on transitions - this runs twice a second.
+    if on_air is not self._tx_on_air:
+      self._tx_on_air = on_air
+      self.enable_tx_button.setStyleSheet(TX_ONAIR_STYLE if on_air else TX_ARMED_STYLE)
 
   def _decode_row(self, ts, snr, delta_freq, mode, message, is_cq, call, distinguish_reply=False):
     mentions_me = mentions_call(message, self.mycall)
