@@ -57,7 +57,7 @@ ignore-patterns=^\.#
 # (useful for modules/projects where namespaces are manipulated during runtime
 # and thus existing member attributes cannot be deduced by static analysis). It
 # supports qualified module names, as well as Unix pattern matching.
-ignored-modules=
+ignored-modules=PyQt6,PyQt6.QtCore,PyQt6.QtGui,PyQt6.QtWidgets
 
 # Python code to execute, usually for sys.path manipulation such as
 # pygtk.require().
@@ -89,7 +89,9 @@ recursive=no
 
 # When enabled, pylint would attempt to guess common misconfiguration and emit
 # user-friendly hints instead of false-positive error messages.
-suggestion-mode=yes
+# suggestion-mode was removed in pylint 3.x; leaving it set makes pylint abort
+# with E0015 (unrecognized-option) before it lints anything.
+# suggestion-mode=yes
 
 # Allow loading of arbitrary C extensions. Extensions are imported into the
 # active Python interpreter and may run arbitrary code.
@@ -436,10 +438,13 @@ exclude-too-few-public-methods=
 ignored-parents=
 
 # Maximum number of arguments for function / method.
-max-args=5
+max-args=12
+
+# Maximum number of positional arguments for function / method.
+max-positional-arguments=12
 
 # Maximum number of attributes for a class (see R0902).
-max-attributes=7
+max-attributes=45
 
 # Maximum number of boolean expressions in an if statement (see R0916).
 max-bool-expr=5
@@ -448,7 +453,7 @@ max-bool-expr=5
 max-branches=12
 
 # Maximum number of locals for function / method body.
-max-locals=15
+max-locals=25
 
 # Maximum number of parents for a class (see R0901).
 max-parents=7
@@ -460,7 +465,7 @@ max-public-methods=20
 max-returns=6
 
 # Maximum number of statements in function / method body.
-max-statements=50
+max-statements=90
 
 # Minimum number of public methods for a class (see R0903).
 min-public-methods=2

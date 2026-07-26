@@ -21,7 +21,6 @@ from pathlib import Path
 from queue import Queue
 
 import DXEntity
-
 import geo
 import wsjtx
 from config import Config
@@ -399,10 +398,10 @@ class Sequencer:
             frequency = packet.Frequency
             tx_status = any([packet.Transmitting, packet.TXEnabled])
             Status().state(frequency=frequency, band=get_band(frequency), mode=packet.TXMode,
-                          tx_enabled=packet.TXEnabled, transmitting=packet.Transmitting,
-                          decoding=packet.Decoding, current_call=current,
-                          current_retry=min(current_retries, self.tx_retries),
-                          max_retries=self.tx_retries)
+                           tx_enabled=packet.TXEnabled, transmitting=packet.Transmitting,
+                           decoding=packet.Decoding, current_call=current,
+                           current_retry=min(current_retries, self.tx_retries),
+                           max_retries=self.tx_retries)
             if packet.DXCall:
               LOG.debug("%s => TX: %s, TXEnabled: %s - TXWatchdog: %s", packet.DXCall,
                         packet.Transmitting, packet.TXEnabled, packet.TXWatchdog)

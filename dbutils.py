@@ -14,7 +14,6 @@ from enum import Enum
 from threading import Thread
 
 import DXEntity
-
 import geo
 
 

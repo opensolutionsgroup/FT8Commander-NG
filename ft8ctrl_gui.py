@@ -24,8 +24,9 @@ from PyQt6.QtGui import (QAction, QColor, QFontDatabase, QFontMetrics, QIcon,
                          QPainter, QPalette, QPen, QPixmap)
 from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QHeaderView, QLabel,
                              QMainWindow, QMenu, QMessageBox, QPushButton,
-                             QSpinBox, QSplitter, QSystemTrayIcon, QTabWidget,
-                             QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+                             QSpinBox, QSplitter, QSystemTrayIcon,
+                             QTableWidget, QTableWidgetItem, QTabWidget,
+                             QVBoxLayout, QWidget)
 
 from config import Config
 from dashboard import DashboardLogHandler
@@ -422,7 +423,8 @@ class MainWindow(QMainWindow):
     dark = self.settings.value("dark_mode", False, type=bool)
     self.dark_mode_action.setChecked(dark)
 
-  def closeEvent(self, event):  # noqa: N802 (Qt override)
+  # Qt calls this by name, so the camelCase spelling is mandatory.
+  def closeEvent(self, event):  # noqa: N802  # pylint: disable=invalid-name
     # With a tray icon available, the window's close button just hides it rather
     # than quitting - matches how a background utility is expected to behave.
     # File > Exit / the tray menu's Exit call _quit() first, which is what

@@ -33,6 +33,11 @@ def mentions_call(message, call):
 
 class Status:
   # Singleton class
+  #
+  # State lives in _init(), called once from __new__ rather than __init__ (so
+  # repeated Status() calls don't reset it). pylint can't see that as the
+  # initializer, so every field looks "defined outside __init__" to it.
+  # pylint: disable=attribute-defined-outside-init
 
   def __new__(cls):
     if hasattr(cls, '_instance') and isinstance(cls._instance, cls):

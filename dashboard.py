@@ -208,8 +208,8 @@ class Dashboard(Thread):
       # avoid clashing with that background.
       style = "black" if is_selected else "red"
       table.add_row(ts.strftime('%H:%M:%S'), str(snr) if snr is not None else "-",
-                   str(delta_freq) if delta_freq is not None else "-", mode or "-",
-                   message or "-", f"[{style}]{result}[/]", style=row_style)
+                    str(delta_freq) if delta_freq is not None else "-", mode or "-",
+                    message or "-", f"[{style}]{result}[/]", style=row_style)
     return Panel(table)
 
   @staticmethod
@@ -229,10 +229,10 @@ class Dashboard(Thread):
     for ts, call, grid, distance, country, band, snr, selector, outcome in data['attempts']:
       style = outcome_style.get(outcome)
       table.add_row(ts.strftime('%H:%M:%S'), call, grid or "-",
-                   f"{distance:.0f}" if distance is not None else "-",
-                   country or "-", str(snr) if snr is not None else "-",
-                   f"{band}m" if band else "-", selector or "-",
-                   f"[{style}]{outcome}[/]" if style else outcome)
+                    f"{distance:.0f}" if distance is not None else "-",
+                    country or "-", str(snr) if snr is not None else "-",
+                    f"{band}m" if band else "-", selector or "-",
+                    f"[{style}]{outcome}[/]" if style else outcome)
     return Panel(table)
 
   @staticmethod

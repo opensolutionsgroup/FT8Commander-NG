@@ -26,6 +26,7 @@ CTY_EXPIRE = 86400 * 7          # One week
 
 LRU_CACHE_SIZE = 8192
 
+
 class DXCCRecord:
   # pylint: disable=too-few-public-methods
   __slots__ = ['prefix', 'country', 'continent', 'cqzone', 'ituzone', 'latitude', 'longitude',
@@ -111,7 +112,9 @@ class DXCC:
     _, info = self.get_prefix(call)
     return info
 
-  def get_prefix(self, call):
+  # Deliberately shadowed per-instance in __init__ by an lru_cache-wrapped copy
+  # of itself, which is what pylint's method-hidden warning is pointing at.
+  def get_prefix(self, call):  # pylint: disable=method-hidden
     call = call.upper()
     prefixes = list({call[:c] for c in range(self._max_len, 0, -1)})
     prefixes.sort(key=lambda x: -len(x))
