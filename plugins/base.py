@@ -197,11 +197,19 @@ class CallSelector(ABC):
 
   @staticmethod
   def coefficient(dist, snr):
+    """Rank a candidate by distance weighted with its signal strength, converting
+    the SNR from dB to a linear power ratio first. A 10dB stronger report is worth
+    10x the distance, so this favours the strongest signals while still preferring
+    the more distant of two comparable ones."""
     return dist * 10**(snr / 10)
 
   @staticmethod
   def sort(records):
-    return sorted(records, key=operator.itemgetter('snr'), reverse=True)
+    # Rank on `coef` (distance x linear SNR), not raw SNR. Every record reaching
+    # here comes from _get(), which sets it. This previously sorted on 'snr'
+    # alone, leaving `coef` computed but never read - so distance played no part
+    # in picking a candidate, despite being half of the documented scoring.
+    return sorted(records, key=operator.itemgetter('coef'), reverse=True)
 
 
 class Nothing:
