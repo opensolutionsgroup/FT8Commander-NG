@@ -38,7 +38,8 @@ from plugins.base import MAX_SNR, MIN_SNR
 from status import Status, mentions_call
 
 REFRESH_MS = 500
-GREEN = QColor("#2e7d32")
+# Text colours now come from THEME_COLORS below; this one survives only as the
+# fill behind my-callsign decode lines, where the text is explicitly white.
 RED = QColor("#c62828")
 # WSJT-X's own default highlight colors (Settings > Colours): green for "CQ in
 # message", yellow for "Transmitted message".
@@ -65,7 +66,17 @@ DEFAULT_SIZE = (480, 420)
 TAB_ATTEMPTS, TAB_WORKED = 1, 2
 TAB_BASE_LABELS = {TAB_ATTEMPTS: "Attempts", TAB_WORKED: "Worked"}
 
-ATTEMPT_COLOR = {"worked": GREEN, "broken": RED, "in progress": QColor("#1976d2")}
+# Text colours painted straight onto whatever the theme puts behind them, so
+# each needs a light and a dark variant: no single value clears the usual 4.5:1
+# readability threshold against both a white and a near-black background. The
+# dark set is the same hues lightened - on the dark table background the
+# originals measured only 3.0-3.6:1.
+THEME_COLORS = {
+  'light': {'worked': QColor("#2e7d32"), 'broken': QColor("#c62828"),
+            'in progress': QColor("#1976d2")},
+  'dark': {'worked': QColor("#66bb6a"), 'broken': QColor("#e57373"),
+           'in progress': QColor("#64b5f6")},
+}
 
 # Monitor greys out while the radio is keyed - nothing can be received then, so
 # the :checked green is scoped to the enabled state and a disabled look wins.
@@ -132,6 +143,9 @@ class MainWindow(QMainWindow):
     # Tracks the last applied Enable Tx styling so it is only swapped on a
     # transition rather than on every refresh tick.
     self._tx_on_air = None
+    # Text colours for the current theme; swapped by _toggle_dark_mode.
+    self.colors = THEME_COLORS['light']
+    self._built = False
     # Min SNR is editable from the GUI, but only for the first active selector -
     # `call_selector` in the config can list several, and editing "the" min SNR
     # only makes unambiguous sense for one of them at a time.
@@ -210,6 +224,9 @@ class MainWindow(QMainWindow):
     self._build_status_bar()
     self._build_tray()
     self._restore_geometry()
+
+    # From here on a theme change can safely repaint the tables itself.
+    self._built = True
 
     self.timer = QTimer(self)
     self.timer.timeout.connect(self.refresh)
@@ -444,7 +461,7 @@ class MainWindow(QMainWindow):
   def _update_tab_badge(self, index, count):
     self.tabs.setTabText(index, f"{TAB_BASE_LABELS[index]} ({count})")
     if count > self._tab_counts[index] and self.tabs.currentIndex() != index:
-      self.tabs.tabBar().setTabTextColor(index, RED)
+      self.tabs.tabBar().setTabTextColor(index, self.colors['broken'])
     self._tab_counts[index] = count
 
   # -- Window/settings persistence -------------------------------------------
@@ -501,8 +518,7 @@ class MainWindow(QMainWindow):
   def _on_tab_changed(self, index):
     self.tabs.tabBar().setTabTextColor(index, self._default_tab_color)
 
-  @staticmethod
-  def _toggle_dark_mode(checked):
+  def _toggle_dark_mode(self, checked):
     app = QApplication.instance()
     if checked:
       palette = QPalette()
@@ -520,6 +536,14 @@ class MainWindow(QMainWindow):
     else:
       app.setStyle("Fusion")
       app.setPalette(app.style().standardPalette())
+    # The table text is painted directly onto the theme's background, so it has
+    # to be re-picked and the already-drawn rows repainted with it. The history
+    # pane only redraws when a new QSO arrives, so drop its cache marker too or
+    # it would keep the previous theme's colours until the next contact.
+    self.colors = THEME_COLORS['dark' if checked else 'light']
+    self._history_session_count = None
+    if self._built:
+      self.refresh()
 
   def _toggle_paused(self):
     Status().set_paused(not Status().is_paused())
@@ -720,7 +744,7 @@ class MainWindow(QMainWindow):
     # with _fill()'s scroll-to-bottom so the latest attempt is always in view.
     for ts, call, grid, distance, country, band, snr, selector, outcome in reversed(
         data['attempts']):
-      color = ATTEMPT_COLOR.get(outcome)
+      color = self.colors.get(outcome)
       outcomes[outcome] += 1
       rows.append([
         (ts.strftime('%H:%M:%S'), None), (call, None), (grid or "-", None),
@@ -745,7 +769,7 @@ class MainWindow(QMainWindow):
       is_selected = "selected" in result
       # Highlight the selected entry the same way the Decode window highlights CQs,
       # so the winning candidate stands out from the surrounding rejections at a glance.
-      color = CQ_FG if is_selected else RED
+      color = CQ_FG if is_selected else self.colors['broken']
       rows.append([
         (ts.strftime('%H:%M:%S'), color if is_selected else None),
         (str(snr) if snr is not None else '', color if is_selected else None),
@@ -780,7 +804,8 @@ class MainWindow(QMainWindow):
       rows.append([
         # Full date here, matching the history pane below - a session can run
         # past midnight, and these get cross-referenced against a logbook.
-        (ts.strftime('%Y-%m-%d %H:%M:%S'), None), (call, GREEN), (grid or "-", None),
+        (ts.strftime('%Y-%m-%d %H:%M:%S'), None), (call, self.colors['worked']),
+        (grid or "-", None),
         (f"{distance:.0f}" if distance is not None else "-", None),
         (country or "-", None), (f"{band}m" if band else "-", None),
         (self._mhz(frequency), None),
@@ -815,7 +840,7 @@ class MainWindow(QMainWindow):
       when = qso['time']
       rows.append([
         (when.strftime('%Y-%m-%d %H:%M') if hasattr(when, 'strftime') else str(when), None),
-        (qso['call'], GREEN), (qso['grid'] or "-", None),
+        (qso['call'], self.colors['worked']), (qso['grid'] or "-", None),
         (f"{qso['distance']:.0f}" if qso['distance'] is not None else "-", None),
         (qso['country'] or "-", None), (f"{qso['band']}m" if qso['band'] else "-", None),
         (self._mhz(qso['frequency']), None),
