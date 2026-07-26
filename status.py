@@ -246,10 +246,10 @@ class Status:
       self.counts[f'rejected: {category or reason}'] += 1
 
   def worked(self, call, grid=None, country=None, band=None, rep_diff=None,
-             distance=None, frequency=None):
+             distance=None, frequency=None, rst_sent=None, rst_rcvd=None):
     with self.lock:
       self.worked_log.appendleft((datetime.utcnow(), call, grid, distance, country,
-                                  band, frequency))
+                                  band, frequency, rst_sent, rst_rcvd))
       self.counts['worked'] += 1
       if rep_diff is not None:
         self.rep_diff_sum += rep_diff

@@ -174,8 +174,12 @@ class Sequencer:
   def log_call(self, packet):
     self.sendto_log(packet)
     frequency = packet.DialFrequency
+    # The exchanged reports are only ever available here, on the logged packet -
+    # persist them alongside the status change so the history view can show them.
+    rst_sent, rst_rcvd = packet.ReportSent, packet.ReportReceived
     self.queue.put(
-      (DBCommand.STATUS, {"call": packet.DXCall, "status": 2, "band": get_band(frequency)})
+      (DBCommand.STATUS, {"call": packet.DXCall, "status": 2, "band": get_band(frequency),
+                          "rst_sent": rst_sent, "rst_rcvd": rst_rcvd})
     )
     country = None
     try:
@@ -184,7 +188,7 @@ class Sequencer:
       pass
     rep_diff = None
     try:
-      rep_diff = int(packet.ReportReceived.lstrip('R')) - int(packet.ReportSent.lstrip('R'))
+      rep_diff = int(rst_rcvd.lstrip('R')) - int(rst_sent.lstrip('R'))
     except (ValueError, TypeError, AttributeError):
       pass
     distance = None
@@ -193,7 +197,8 @@ class Sequencer:
     except (KeyError, RuntimeError, TypeError):
       pass
     Status().worked(packet.DXCall, packet.DXGrid, country, get_band(frequency), rep_diff,
-                    distance=distance, frequency=frequency)
+                    distance=distance, frequency=frequency,
+                    rst_sent=rst_sent, rst_rcvd=rst_rcvd)
     LOG.info("** Logged call: %s, Grid: %s, Mode: %s",
              packet.DXCall, packet.DXGrid, wsjtx.Mode(packet.Mode).name)
 

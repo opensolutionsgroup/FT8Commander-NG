@@ -45,12 +45,22 @@ CREATE TABLE IF NOT EXISTS cqcalls
   ituzone INTEGER,
   frequency INTEGER,
   band INTEGER,
-  packet JSON
+  packet JSON,
+  rst_sent TEXT,
+  rst_rcvd TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_call on cqcalls (call, band);
 CREATE INDEX IF NOT EXISTS idx_time on cqcalls (time DESC);
 CREATE INDEX IF NOT EXISTS idx_grid on cqcalls (grid ASC);
 """
+
+# Columns added after the original schema shipped. Databases created before
+# them are migrated in place on startup; rows logged earlier simply keep NULL,
+# since the reports were never captured at the time.
+MIGRATIONS = (
+  ('rst_sent', 'ALTER TABLE cqcalls ADD COLUMN rst_sent TEXT'),
+  ('rst_rcvd', 'ALTER TABLE cqcalls ADD COLUMN rst_rcvd TEXT'),
+)
 
 
 logger = logging.getLogger('ft8ctrl.dbutils')
@@ -123,6 +133,26 @@ def create_db(db_name):
   with connect_db(db_name) as conn:
     curs = conn.cursor()
     curs.executescript(SQL_TABLE)
+    # CREATE TABLE IF NOT EXISTS leaves an existing table alone, so bring older
+    # databases up to date rather than silently running against a stale schema.
+    existing = {row[1] for row in curs.execute("PRAGMA table_info(cqcalls)")}
+    for column, statement in MIGRATIONS:
+      if column not in existing:
+        logger.info("Adding missing column %s to cqcalls", column)
+        curs.execute(statement)
+
+
+def get_worked(db_name, limit=500):
+  """Every QSO ever logged, newest first - the persistent history behind the
+  session-only worked list. rst_sent/rst_rcvd are NULL for contacts made before
+  those columns existed."""
+  req = ("SELECT call, time, grid, distance, country, band, frequency, snr, "
+         "rst_sent, rst_rcvd FROM cqcalls WHERE status = 2 "
+         "ORDER BY time DESC LIMIT ?")
+  with connect_db(db_name) as conn:
+    curs = conn.cursor()
+    curs.execute(req, (limit,))
+    return [dict(r) for r in curs]
 
 
 def get_call(db_name, call):
@@ -157,14 +187,25 @@ class DBInsert(Thread):
   # so it can never pass the selector's freshness window again, and the
   # "already worked" reason in Activity becomes unreachable for it. snr/packet
   # stay protected for status 2 rows, preserving the original QSO's data.
+  # Columns are named explicitly rather than relying on positional VALUES, so
+  # adding a column to the schema can't silently shift every field along.
   INSERT = """
-  INSERT INTO cqcalls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO cqcalls
+    (call, extra, time, status, snr, grid, lat, lon, distance, azimuth,
+     country, continent, cqzone, ituzone, frequency, band, packet)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(call, band) DO UPDATE SET
     time = excluded.time,
     snr = CASE WHEN status <> 2 THEN excluded.snr ELSE snr END,
     packet = CASE WHEN status <> 2 THEN excluded.packet ELSE packet END
   """
   UPDATE = "UPDATE cqcalls SET status=? WHERE status <> 2 and call = ? and band = ?"
+  # Logging a QSO is the one status change that also records the exchanged
+  # reports. It deliberately omits the `status <> 2` guard the plain UPDATE
+  # uses: this is the transition *to* 2, and re-logging the same station should
+  # refresh the reports rather than be ignored.
+  UPDATE_WORKED = ("UPDATE cqcalls SET status=?, rst_sent=?, rst_rcvd=? "
+                   "WHERE call = ? and band = ?")
   DELETE = "DELETE from cqcalls WHERE status= 1 AND call = ? and band = ?"
 
   def __init__(self, db_name, queue, grid):
@@ -233,6 +274,13 @@ class DBInsert(Thread):
   def status(conn, data):
     with conn:
       curs = conn.cursor()
+      if 'rst_sent' in data or 'rst_rcvd' in data:
+        curs.execute(DBInsert.UPDATE_WORKED,
+                     (data['status'], data.get('rst_sent'), data.get('rst_rcvd'),
+                      data['call'], data['band']))
+        logger.debug("Logged %s (%dm) sent=%s rcvd=%s", data['call'], data['band'],
+                     data.get('rst_sent'), data.get('rst_rcvd'))
+        return
       curs.execute(DBInsert.UPDATE, (data['status'], data['call'], data['band']))
       logger.debug("%s (%s, %s, %d)", DBInsert.UPDATE, data['status'], data['call'], data['band'])
 

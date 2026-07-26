@@ -244,12 +244,16 @@ class Dashboard(Thread):
     table.add_column("Dist(km)", justify="right")
     table.add_column("Country", max_width=18, no_wrap=True, overflow="ellipsis")
     table.add_column("Band", justify="right")
-    table.add_column("Freq(Hz)", justify="right")
-    for ts, call, grid, distance, country, band, frequency in data['worked_log']:
+    table.add_column("Freq(MHz)", justify="right")
+    table.add_column("RSTs", justify="right")
+    table.add_column("RSTr", justify="right")
+    for (ts, call, grid, distance, country, band,
+         frequency, rst_sent, rst_rcvd) in data['worked_log']:
       table.add_row(ts.strftime('%H:%M:%S'), f"[bold green]{call}[/]", grid or "-",
                     f"{distance:.0f}" if distance is not None else "-",
                     country or "-", f"{band}m" if band else "-",
-                    f"{frequency:,}" if frequency is not None else "-")
+                    f"{frequency / 1e6:.3f}" if frequency else "-",
+                    rst_sent or "-", rst_rcvd or "-")
     return Panel(table)
 
   @staticmethod

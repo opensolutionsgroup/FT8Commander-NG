@@ -13,10 +13,12 @@ than pip, since it isn't in requirements.txt - see README for details).
 """
 
 import logging
+import sqlite3
 import sys
 from argparse import ArgumentParser
 from collections import Counter
 from datetime import datetime
+from pathlib import Path
 from threading import Thread
 
 from PyQt6.QtCore import QSettings, Qt, QTimer
@@ -30,6 +32,7 @@ from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QHeaderView, QLabel,
 
 from config import Config
 from dashboard import DashboardLogHandler
+from dbutils import get_worked
 from ft8ctrl import Sequencer, setup
 from plugins.base import MAX_SNR, MIN_SNR
 from status import Status, mentions_call
@@ -100,9 +103,13 @@ def compass_point(azimuth):
 
 class MainWindow(QMainWindow):
 
-  def __init__(self, mycall, call_select=None, sequencer=None):
+  def __init__(self, mycall, call_select=None, sequencer=None, db_name=None):
     super().__init__()
     self.mycall = mycall
+    # Source for the QSO history pane. Kept optional so the window can still be
+    # constructed (e.g. in tests) without a database behind it.
+    self.db_name = Path(db_name).expanduser() if db_name else None
+    self._history_session_count = None
     # Min SNR is editable from the GUI, but only for the first active selector -
     # `call_selector` in the config can list several, and editing "the" min SNR
     # only makes unambiguous sense for one of them at a time.
@@ -204,10 +211,20 @@ class MainWindow(QMainWindow):
     attempts_splitter.setStretchFactor(1, 2)
     self.tabs.addTab(self._tab_page(attempts_splitter), "Attempts")
 
-    self.worked_table = self._make_table(
-      ["Time", "Call", "Grid", "Dist(km)", "Country", "Band", "Freq(Hz)"])
+    # This session's QSOs on top, every QSO ever logged underneath - same split
+    # treatment as the Decode and Attempts tabs.
+    worked_columns = ["Time", "Call", "Grid", "Dist(km)", "Country", "Band",
+                      "Freq(MHz)", "RSTs", "RSTr"]
+    self.worked_table = self._make_table(worked_columns)
     self.worked_stats_label = self._stats_label()
-    self.tabs.addTab(self._tab_page(self.worked_table, self.worked_stats_label), "Worked")
+    self.history_table = self._make_table(["Date/Time"] + worked_columns[1:])
+    self.history_stats_label = self._stats_label()
+    worked_splitter = QSplitter(Qt.Orientation.Vertical)
+    worked_splitter.addWidget(self._tab_page(self.worked_table, self.worked_stats_label))
+    worked_splitter.addWidget(self._tab_page(self.history_table, self.history_stats_label))
+    worked_splitter.setStretchFactor(0, 1)
+    worked_splitter.setStretchFactor(1, 2)
+    self.tabs.addTab(self._tab_page(worked_splitter), "Worked")
 
     # Tracks the last-seen count per tab, so a running total that increases while
     # you're looking at a *different* tab can flag that tab as having new activity.
@@ -715,18 +732,26 @@ class MainWindow(QMainWindow):
       text += f" ({reasons})"
     self.activity_stats_label.setText(text)
 
+  @staticmethod
+  def _mhz(frequency):
+    """WSJT-X reports the dial frequency in Hz; hams read it in MHz."""
+    return f"{frequency / 1e6:.3f}" if frequency else "-"
+
   def _refresh_worked(self, data):
     rows = []
     # Oldest-first, newest-last - matches the Decode tab's convention, and pairs
     # with _fill()'s scroll-to-bottom so the latest QSO is always in view.
-    for ts, call, grid, distance, country, band, frequency in reversed(data['worked_log']):
+    for (ts, call, grid, distance, country, band,
+         frequency, rst_sent, rst_rcvd) in reversed(data['worked_log']):
       rows.append([
         (ts.strftime('%H:%M:%S'), None), (call, GREEN), (grid or "-", None),
         (f"{distance:.0f}" if distance is not None else "-", None),
         (country or "-", None), (f"{band}m" if band else "-", None),
-        (f"{frequency:,}" if frequency is not None else "-", None),
+        (self._mhz(frequency), None),
+        (rst_sent or "-", None), (rst_rcvd or "-", None),
       ])
     self._fill(self.worked_table, rows)
+    self._refresh_history(len(data['worked_log']))
 
     counts = data['counts']
     rep_diff = f"{data['rep_diff']:+.1f}dB" if data['rep_diff'] is not None else "-"
@@ -735,6 +760,36 @@ class MainWindow(QMainWindow):
       f"Rep Diff: {rep_diff}"
     )
     self._update_tab_badge(TAB_WORKED, len(data['worked_log']))
+
+  def _refresh_history(self, session_count):
+    """Reload the full QSO history from the database. Only re-queries when this
+    session has logged another contact (or on the first pass) - the refresh
+    timer fires twice a second and the history only changes on a new QSO."""
+    if self.db_name is None or session_count == self._history_session_count:
+      return
+    self._history_session_count = session_count
+    try:
+      history = get_worked(self.db_name)
+    except sqlite3.Error as err:
+      logging.getLogger('ft8ctrl.gui').warning("Could not read QSO history: %s", err)
+      return
+
+    rows = []
+    for qso in reversed(history):          # oldest first, newest at the bottom
+      when = qso['time']
+      rows.append([
+        (when.strftime('%Y-%m-%d %H:%M') if hasattr(when, 'strftime') else str(when), None),
+        (qso['call'], GREEN), (qso['grid'] or "-", None),
+        (f"{qso['distance']:.0f}" if qso['distance'] is not None else "-", None),
+        (qso['country'] or "-", None), (f"{qso['band']}m" if qso['band'] else "-", None),
+        (self._mhz(qso['frequency']), None),
+        (qso['rst_sent'] or "-", None), (qso['rst_rcvd'] or "-", None),
+      ])
+    self._fill(self.history_table, rows)
+    countries = len({q['country'] for q in history if q['country']})
+    grids = len({q['grid'][:4] for q in history if q['grid']})
+    self.history_stats_label.setText(
+      f"History: {len(history)} QSOs   Countries: {countries}   Grids: {grids}")
 
   def _refresh_status_bar(self, data):
     self.status_endpoint_label.setText(f"WSJT-X endpoint: {data['wsjt_endpoint'] or '-'}")
@@ -760,7 +815,7 @@ def main():
   seq_thread.start()
 
   app = QApplication(sys.argv)
-  window = MainWindow(config.my_call, call_select, main_loop)
+  window = MainWindow(config.my_call, call_select, main_loop, config.db_name)
   window.show()
   sys.exit(app.exec())
 
