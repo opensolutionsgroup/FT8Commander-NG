@@ -240,11 +240,11 @@ class MainWindow(QMainWindow):
       self._tab_page(self.attempts_table, self.attempts_stats_label), 1, 2)), "Attempts")
 
     # This session's QSOs on top, every QSO ever logged underneath.
-    worked_columns = ["Time", "Call", "Grid", "Dist(km)", "Country", "Band",
+    worked_columns = ["Date/Time", "Call", "Grid", "Dist(km)", "Country", "Band",
                       "Freq(MHz)", "RSTs", "RSTr"]
     self.worked_table = self._make_table(worked_columns)
     self.worked_stats_label = self._stats_label()
-    self.history_table = self._make_table(["Date/Time"] + worked_columns[1:])
+    self.history_table = self._make_table(worked_columns)
     self.history_stats_label = self._stats_label()
     self.tabs.addTab(self._tab_page(self._split(
       self._tab_page(self.worked_table, self.worked_stats_label),
@@ -771,7 +771,9 @@ class MainWindow(QMainWindow):
     for (ts, call, grid, distance, country, band,
          frequency, rst_sent, rst_rcvd) in reversed(data['worked_log']):
       rows.append([
-        (ts.strftime('%H:%M:%S'), None), (call, GREEN), (grid or "-", None),
+        # Full date here, matching the history pane below - a session can run
+        # past midnight, and these get cross-referenced against a logbook.
+        (ts.strftime('%Y-%m-%d %H:%M:%S'), None), (call, GREEN), (grid or "-", None),
         (f"{distance:.0f}" if distance is not None else "-", None),
         (country or "-", None), (f"{band}m" if band else "-", None),
         (self._mhz(frequency), None),
