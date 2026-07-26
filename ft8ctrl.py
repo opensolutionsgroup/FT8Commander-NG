@@ -227,18 +227,30 @@ class Sequencer:
 
     while True:
       if not Status().is_monitoring():
-        # Monitoring turned off from the GUI (Monitor button): stop touching the
-        # WSJT-X socket entirely - no recv, no send - so a stopped/closed WSJT-X
-        # can't surface connection errors (e.g. ICMP port-unreachable turning into
-        # ConnectionRefusedError on the next socket op). Drop any in-flight QSO
-        # tracking so we don't resume mid-exchange against stale state, and reflect
-        # the "not talking to WSJT-X" state in the UI.
+        # Monitoring turned off from the GUI (Monitor button): don't act on
+        # anything WSJT-X sends and never transmit, so a stopped/closed WSJT-X
+        # can't surface connection errors. Drop any in-flight QSO tracking so we
+        # don't resume mid-exchange against stale state, and reflect the "not
+        # talking to WSJT-X" state in the UI.
         if current is not None or was_transmitting:
           current = current_since = None
           current_retries = 0
           giving_up = completing = was_transmitting = False
         Status().state(current_call=None, transmitting=False, decoding=False,
                        tx_enabled=False)
+        # Still drain the socket, discarding everything. WSJT-X keeps
+        # broadcasting regardless of our button, and the kernel receive buffer
+        # fills in minutes (~208KB) - if we simply ignored it, re-enabling
+        # Monitor after being away would replay hours of stale decodes and
+        # status packets as though they were live: calling stations heard
+        # yesterday, retry-counting against an ancient TxMessage, bogus
+        # frequency/Transmitting state. Discarding here guarantees that turning
+        # Monitor back on always resumes from genuinely current traffic.
+        try:
+          while True:
+            self.sock.recvfrom(1024)
+        except (BlockingIOError, OSError):
+          pass          # drained (non-blocking socket raises once empty)
         time.sleep(0.5)
         continue
 
