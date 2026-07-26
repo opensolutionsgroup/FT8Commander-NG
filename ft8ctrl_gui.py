@@ -105,7 +105,8 @@ class MainWindow(QMainWindow):
     # Min SNR is editable from the GUI, but only for the first active selector -
     # `call_selector` in the config can list several, and editing "the" min SNR
     # only makes unambiguous sense for one of them at a time.
-    self.snr_selector = call_select.call_select[0] if call_select and call_select.call_select else None
+    selectors = call_select.call_select if call_select else None
+    self.snr_selector = selectors[0] if selectors else None
     self.snr_selector_name = self.snr_selector.__class__.__name__ if self.snr_selector else None
     # tx_retries lives on the Sequencer itself (it's a top-level ft8ctrl: config
     # value, not per-selector like min_snr).

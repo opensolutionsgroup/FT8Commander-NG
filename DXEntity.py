@@ -162,4 +162,3 @@ class DXCC:
     except (URLError, OSError, http.client.HTTPException) as err:
       logging.error('DXEntity: failed to download %s: %s', CTY_URL, err)
       return False
-      return

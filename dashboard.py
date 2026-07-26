@@ -7,7 +7,6 @@
 """Live terminal dashboard showing what ft8ctrl is doing while it waits"""
 
 import logging
-import time
 from datetime import datetime
 from threading import Event, Thread
 
